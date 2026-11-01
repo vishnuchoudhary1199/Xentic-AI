@@ -10,7 +10,7 @@ work runs in Docker.
 
 ---
 
-## Reviewer quick start
+## Quick start
 
 **Prerequisites:** Docker with the Compose v2 plugin, and Terraform ≥ 1.10. Run the scripts from
 bash on Linux, macOS or WSL.
@@ -36,7 +36,11 @@ Expected results:
 | `tf-plan.sh dev --offline` | `Plan: 52 to add, 0 to change, 0 to destroy.` |
 | `tf-plan.sh prod --offline` | `Plan: 70 to add, 0 to change, 0 to destroy.` |
 
-To run the plain Terraform commands instead of the script, see
+A plain `docker compose up` (without `-d`) works too. Run the scripts from a second terminal.
+
+Plain `terraform init` uses each environment's S3 backend, so it needs AWS credentials and the
+state bucket (created once by `infra/bootstrap`). Without an AWS account, use the `--offline` script
+above, or `terraform init -backend=false && terraform validate`. The full steps for both are in
 [Reviewing Terraform](#reviewing-terraform).
 
 ---
