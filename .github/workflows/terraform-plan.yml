@@ -1,0 +1,157 @@
+name: terraform-plan
+
+# fmt -> init -> validate -> plan for every environment on each pull request
+# that touches the infrastructure. The plan is published three ways:
+#   1. a sticky PR comment per environment (updated on every push)
+#   2. the job summary
+#   3. a downloadable workflow artifact (tfplan.txt)
+#
+# Credentials:
+#   * If the repository variable AWS_PLAN_ROLE_ARN is set, the job assumes that
+#     read-only IAM role via GitHub OIDC (no long-lived keys) and plans against
+#     the real S3 backend.
+#   * Otherwise it runs in offline mode (local backend, dummy credentials,
+#     -refresh=false), so the workflow is green on forks and in review without
+#     any AWS account.
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - "scripts/tf-plan.sh"
+      - ".github/workflows/terraform-plan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write # sticky plan comment
+  id-token: write      # OIDC to AWS (only used when AWS_PLAN_ROLE_ARN is set)
+
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VERSION: "1.16.7"
+
+jobs:
+  plan:
+    name: plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.AWS_PLAN_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: terraform fmt / init / validate / plan
+        id: plan
+        continue-on-error: true
+        env:
+          MODE: ${{ vars.AWS_PLAN_ROLE_ARN != '' && 'aws' || 'offline' }}
+        run: |
+          set -o pipefail
+          args=("${{ matrix.environment }}")
+          [[ "$MODE" == "offline" ]] && args+=(--offline)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          ./scripts/tf-plan.sh "${args[@]}" 2>&1 | tee run.log
+
+      - name: Build plan report
+        id: report
+        if: always()
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          OUTCOME: ${{ steps.plan.outcome }}
+          MODE: ${{ steps.plan.outputs.mode }}
+        run: |
+          plan_file="infra/envs/${ENVIRONMENT}/plan/tfplan.txt"
+          if [[ "$OUTCOME" == "success" && -f "$plan_file" ]]; then
+            icon="✅"; body_file="$plan_file"
+            summary="$(grep -E '^(Plan:|No changes)' "$plan_file" || echo 'Plan complete')"
+          else
+            icon="❌"; body_file="run.log"
+            summary="fmt/init/validate/plan failed - see log below"
+          fi
+
+          # GitHub comments are capped at 65536 chars; keep the tail if huge.
+          body="$(sed 's/\x1b\[[0-9;]*m//g' "$body_file" | tail -c 55000)"
+
+          {
+            echo "<!-- terraform-plan:${ENVIRONMENT} -->"
+            echo "### ${icon} Terraform plan: \`${ENVIRONMENT}\`"
+            echo
+            echo "**${summary}**  "
+            echo "Mode: \`${MODE:-unknown}\` · Terraform \`${TF_VERSION}\` · Commit \`${GITHUB_SHA::7}\` · [workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            echo "<details><summary>Show plan</summary>"
+            echo
+            echo '```hcl'
+            echo "$body"
+            echo '```'
+            echo "</details>"
+          } > report.md
+
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: |
+            infra/envs/${{ matrix.environment }}/plan/tfplan.txt
+            run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Post or update PR comment
+        if: always() && github.event_name == 'pull_request'
+        # Fork PRs get a read-only token; the summary + artifact still work.
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('report.md', 'utf8');
+            const marker = `<!-- terraform-plan:${process.env.ENVIRONMENT} -->`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome != 'success'
+        run: |
+          echo "::error::Terraform checks failed for ${{ matrix.environment }}"
+          exit 1
