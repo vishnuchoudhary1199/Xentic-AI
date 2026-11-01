@@ -133,14 +133,16 @@ resource "aws_db_instance" "this" {
   multi_az               = var.multi_az
 
   # Backups and protection (per-environment)
-  backup_retention_period   = var.backup_retention_days
-  backup_window             = var.backup_window
-  maintenance_window        = var.maintenance_window
-  copy_tags_to_snapshot     = true
-  delete_automated_backups  = var.delete_automated_backups
-  deletion_protection       = var.deletion_protection
-  skip_final_snapshot       = var.skip_final_snapshot
-  final_snapshot_identifier = var.skip_final_snapshot ? null : "${var.name}-postgres-final"
+  backup_retention_period  = var.backup_retention_days
+  backup_window            = var.backup_window
+  maintenance_window       = var.maintenance_window
+  copy_tags_to_snapshot    = true
+  delete_automated_backups = var.delete_automated_backups
+  deletion_protection      = var.deletion_protection
+  skip_final_snapshot      = var.skip_final_snapshot
+  # Timestamped so a second destroy/recreate cycle doesn't collide with an
+  # older final snapshot. Set once at creation and then ignored (see lifecycle).
+  final_snapshot_identifier = var.skip_final_snapshot ? null : "${var.name}-postgres-final-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 
   # Observability
   enabled_cloudwatch_logs_exports       = ["postgresql", "upgrade"]
@@ -152,4 +154,8 @@ resource "aws_db_instance" "this" {
   apply_immediately = var.apply_immediately
 
   tags = { Name = "${var.name}-postgres" }
+
+  lifecycle {
+    ignore_changes = [final_snapshot_identifier]
+  }
 }
