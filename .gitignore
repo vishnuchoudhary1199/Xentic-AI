@@ -1,0 +1,21 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+infra/envs/*/plan/
+# written temporarily by scripts/tf-plan.sh --offline
+backend_override.tf
+override.tf
+*_override.tf
+
+# Local database
+.env
+backups/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

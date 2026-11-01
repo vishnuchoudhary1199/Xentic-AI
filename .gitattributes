@@ -1,0 +1,6 @@
+# Shell scripts and SQL must keep LF endings, even on Windows checkouts,
+# or they break inside the Linux containers.
+*.sh  text eol=lf
+*.sql text eol=lf
+*.tf  text eol=lf
+*.yml text eol=lf
