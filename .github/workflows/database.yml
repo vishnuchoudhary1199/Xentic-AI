@@ -1,0 +1,70 @@
+name: database
+
+# Runs the same commands a reviewer runs locally: start PostgreSQL with Docker
+# Compose (migrations + seed), back up, restore into a fresh database and into
+# a fresh server, and print the EXPLAIN plan for the indexed report query.
+
+on:
+  pull_request:
+    paths:
+      - "db/**"
+      - "scripts/**"
+      - "docker-compose.yml"
+      - ".github/workflows/database.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: shellcheck -x scripts/*.sh db/migrate.sh db/initdb/*.sh
+
+      - name: docker compose up (migrate + seed)
+        run: docker compose up -d --wait
+
+      - name: Seed sanity checks
+        run: |
+          docker compose exec -T db psql -U bookings -d bookings -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            ASSERT (SELECT count(*) FROM hotel_bookings) >= 100, 'expected >= 100 bookings';
+            ASSERT (SELECT count(DISTINCT city) FROM hotel_bookings) > 1, 'expected multiple cities';
+            ASSERT (SELECT count(DISTINCT org_id) FROM hotel_bookings) > 1, 'expected multiple orgs';
+            ASSERT (SELECT count(DISTINCT status) FROM hotel_bookings) > 1, 'expected multiple statuses';
+            ASSERT (SELECT count(DISTINCT booking_id) FROM booking_events) > 0, 'expected booking events';
+          END $$;
+          SQL
+
+      - name: Backup
+        run: ./scripts/backup.sh
+
+      - name: Restore into a fresh database
+        run: ./scripts/restore.sh
+
+      - name: Restore into a fresh server
+        run: ./scripts/restore.sh --new-server
+
+      - name: EXPLAIN the Delhi report query
+        run: ./scripts/explain.sh --compare | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload backup artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backups
+          path: backups/
+          retention-days: 7
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --profile restore logs
