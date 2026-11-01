@@ -1,0 +1,62 @@
+# Local PostgreSQL for the database tasks.
+#
+#   docker compose up -d --wait     # start; first start runs migrations + seed
+#   docker compose down             # stop (data kept in the named volume)
+#   docker compose down -v          # stop and wipe data (next start re-seeds)
+#
+# Same major version as RDS in infra/ (PostgreSQL 16).
+
+name: hotel-bookings
+
+x-postgres: &postgres
+  image: postgres:16-alpine
+  environment: &pg-env
+    POSTGRES_USER: ${POSTGRES_USER:-bookings}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bookings_local_only}
+    POSTGRES_DB: ${POSTGRES_DB:-bookings}
+    TZ: UTC
+    PGTZ: UTC
+  command:
+    - postgres
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - log_min_duration_statement=500
+    - -c
+    - timezone=UTC
+  healthcheck:
+    # TCP on purpose: during first-boot init the server only listens on a unix
+    # socket, so this stays unhealthy until migrations + seed have finished.
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+    start_period: 5s
+  restart: unless-stopped
+
+services:
+  db:
+    <<: *postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Migrations, seed and the migration runner.
+      - ./db:/db:ro
+      # Runs once, on first start with an empty volume: migrate + seed.
+      - ./db/initdb:/docker-entrypoint-initdb.d:ro
+
+  # A second, completely empty server used by `./scripts/restore.sh --new-server`
+  # to prove a dump restores on a brand-new instance. Data lives in tmpfs, so
+  # every start is fresh. Not started by a plain `docker compose up`.
+  restore-db:
+    <<: *postgres
+    profiles: ["restore"]
+    restart: "no"
+    ports:
+      - "127.0.0.1:${RESTORE_POSTGRES_PORT:-5433}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+
+volumes:
+  pgdata:
