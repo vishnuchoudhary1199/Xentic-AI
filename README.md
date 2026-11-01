@@ -8,6 +8,12 @@ verified backup and restore scripts.
 Nothing here needs an AWS account: the Terraform can be planned offline, and all the database
 work runs in Docker.
 
+> **Running Terraform without AWS?** Each environment uses an S3 backend, so a plain
+> `terraform init` needs AWS credentials and the state bucket. Without them, run
+> `terraform init -backend=false && terraform validate` in `infra/envs/dev` or `infra/envs/prod`,
+> or `./scripts/tf-plan.sh dev --offline` for the full fmt, init, validate and `plan -refresh=false`
+> run. Details are in [Reviewing Terraform](#reviewing-terraform).
+
 ---
 
 ## Quick start
