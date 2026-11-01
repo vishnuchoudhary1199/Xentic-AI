@@ -94,7 +94,12 @@ jobs:
           fi
 
           # GitHub comments are capped at 65536 chars; keep the tail if huge.
-          body="$(sed 's/\x1b\[[0-9;]*m//g' "$body_file" | tail -c 55000)"
+          clean="$(sed 's/\x1b\[[0-9;]*m//g' "$body_file")"
+          body="$(printf '%s\n' "$clean" | tail -c 55000)"
+          if [[ ${#clean} -gt 55000 ]]; then
+            body="# ... output truncated, showing the end. Full plan: tfplan-${ENVIRONMENT} artifact.
+          ${body#*$'\n'}"
+          fi
 
           {
             echo "<!-- terraform-plan:${ENVIRONMENT} -->"
